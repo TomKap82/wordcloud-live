@@ -1,0 +1,43 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signed() { return request.auth != null; }
+    function admin() { return signed() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)) && request.auth.token.firebase.sign_in_provider == 'password'; }
+    function session(sid) { return get(/databases/$(database)/documents/sessions/$(sid)).data; }
+    function wordOk(w) { return w is string && w.size() >= 1 && w.size() <= 40 && w.matches('.*[^ ].*'); }
+    function wordsOk(w) {
+      return w is list && w.size() <= 5 &&
+        (w.size() < 1 || wordOk(w[0])) &&
+        (w.size() < 2 || wordOk(w[1])) &&
+        (w.size() < 3 || wordOk(w[2])) &&
+        (w.size() < 4 || wordOk(w[3])) &&
+        (w.size() < 5 || wordOk(w[4]));
+    }
+    match /admins/{uid} {
+      allow read: if admin() && request.auth.uid == uid;
+      allow write: if false; // Admin-Dokument manuell nur in Firebase Console anlegen
+    }
+    match /sessions/{sid} {
+      allow get: if signed(); // Sitzungscode ist eine zufällige Kennung, keine Admin-Berechtigung
+      allow list: if false;
+      allow create: if admin() && request.resource.data.keys().hasOnly(['question','state','blocked','createdAt'])
+        && request.resource.data.question is string && request.resource.data.question.size() <= 120
+        && request.resource.data.question.size() > 0 && request.resource.data.state == 'collecting'
+        && request.resource.data.blocked == [] && request.resource.data.createdAt == request.time;
+      allow update: if admin() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['state','blocked'])
+        && request.resource.data.state in ['collecting','revealed']
+        && request.resource.data.blocked is list && request.resource.data.blocked.size() <= 100;
+      allow delete: if false;
+      match /entries/{uid} {
+        allow get: if admin() || (signed() && request.auth.uid == uid) || (signed() && session(sid).state == 'revealed');
+        allow list: if admin() || (signed() && session(sid).state == 'revealed');
+        allow create, update: if signed() && request.auth.uid == uid
+          && request.auth.token.firebase.sign_in_provider == 'anonymous'
+          && session(sid).state in ['collecting','revealed']
+          && request.resource.data.keys().hasOnly(['words'])
+          && wordsOk(request.resource.data.words);
+        allow delete: if admin();
+      }
+    }
+  }
+}
